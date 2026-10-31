@@ -1,0 +1,79 @@
+# Alert -> remediator relay -> repository_dispatch -> this workflow.
+# The only actions allowed are those in remediation/catalog.yaml; the payload
+# is re-validated here and the outcome is judged by the alert clearing.
+name: remediate
+
+on:
+  repository_dispatch:
+    types: [remediate]
+
+permissions:
+  contents: read
+
+env:
+  CAMPUS_STATE_DIR: ${{ vars.CAMPUS_STATE_DIR || '/var/lib/campus-platform' }}
+  HYPERV_HOST: ${{ vars.HYPERV_HOST }}
+  PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL || 'http://127.0.0.1:19090' }}
+
+jobs:
+  remediate:
+    name: remediate
+    runs-on: [self-hosted, linux, campus-lab]
+    timeout-minutes: 45
+    # One remediation per host at a time; queued, never cancelled mid-action.
+    concurrency:
+      group: remediate-${{ github.event.client_payload.host }}
+      cancel-in-progress: false
+    env:
+      LAB_ADMIN_PASSWORD: ${{ secrets.LAB_ADMIN_PASSWORD }}
+      SIM_API_TOKEN: ${{ secrets.SIM_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-controller
+        with:
+          terraform: "false"
+
+      - name: Render inventory
+        run: ./scripts/render_state.sh
+
+      - name: Validate payload against catalog and inventory
+        id: v
+        env:
+          REMEDIATION_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          INVENTORY_FILE: ansible/inventory/hosts.yml
+        run: python3 scripts/validate_remediation.py
+
+      - name: Run remediation
+        working-directory: ansible
+        env:
+          PLAYBOOK: ${{ steps.v.outputs.playbook }}
+          TARGET: ${{ steps.v.outputs.host }}
+          EXTRA_VARS_JSON: ${{ steps.v.outputs.extra_vars_json }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$EXTRA_VARS_JSON" > "$RUNNER_TEMP/extra_vars.json"
+          ansible-playbook "remediation/$PLAYBOOK" --limit "$TARGET" -e "@$RUNNER_TEMP/extra_vars.json"
+
+      - name: Verify the alert cleared
+        env:
+          TARGET: ${{ steps.v.outputs.host }}
+          ALERTNAME: ${{ steps.v.outputs.alertname }}
+        run: |
+          python3 scripts/prom_wait.py --prometheus "$PROMETHEUS_URL" \
+            --expr "ALERTS{alertname=\"$ALERTNAME\",alertstate=\"firing\",host=\"$TARGET\"}" \
+            --expect empty --timeout 900 --interval 30 --stable 120
+
+      - name: Summary
+        if: always()
+        env:
+          PLAYBOOK: ${{ steps.v.outputs.playbook }}
+          TARGET: ${{ steps.v.outputs.host }}
+          ALERTNAME: ${{ steps.v.outputs.alertname }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### Remediation: \`${PLAYBOOK:-rejected}\` on \`${TARGET:-n/a}\`"
+            echo "- alert: \`${ALERTNAME:-n/a}\`"
+            echo "- outcome: **${OUTCOME}**"
+            [[ "$OUTCOME" == "success" ]] || echo "- escalation: alert left firing; on-call notified by Alertmanager"
+          } >> "$GITHUB_STEP_SUMMARY"

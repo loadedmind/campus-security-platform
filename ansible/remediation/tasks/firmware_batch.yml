@@ -1,0 +1,28 @@
+---
+- name: Start firmware update for batch
+  ansible.builtin.uri:
+    url: "{{ api }}/devices/{{ item }}/firmware"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ sim_api_token }}"
+    body_format: json
+    body:
+      version: "{{ desired_version }}"
+    status_code: [202]
+  delegate_to: localhost
+  loop: "{{ batch }}"
+
+- name: Wait until the whole batch is online on the desired version
+  ansible.builtin.uri:
+    url: "{{ api }}/devices"
+    return_content: true
+  delegate_to: localhost
+  register: batch_state
+  until: >-
+    batch_state.json.devices
+    | selectattr('device_id', 'in', batch)
+    | selectattr('online')
+    | selectattr('firmware', 'equalto', desired_version)
+    | list | length == batch | length
+  retries: 30
+  delay: 10

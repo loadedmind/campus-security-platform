@@ -1,0 +1,14 @@
+# Shared site services: patch source of truth (WSUS) for every campus.
+name: core
+kind: core
+display_name: Shared Site Services
+timezone: Central Standard Time
+image: ws2025-core-2026.11
+patch_ring: 2          # core patches last, after every campus ring is healthy
+hosts:
+  - name: core-wsus01
+    role: wsus
+    cpu: 2
+    memory_gb: 4
+platform:
+  release: v1.0.0      # pins the internal packages (windows_exporter) on core hosts

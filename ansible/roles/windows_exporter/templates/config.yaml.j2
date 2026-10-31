@@ -1,0 +1,16 @@
+# Managed by campus-security-platform (Ansible role windows_exporter). Do not edit on the host.
+collectors:
+  enabled: {{ windows_exporter_collectors }}
+collector:
+  service:
+    # Only services the platform alerts on; keeps series count small.
+    include: "^(CampusSecSim|windows_exporter|wuauserv|WinRM|WsusService|W3SVC)$"
+  textfile:
+    directories: '{{ platform_root }}\textfile'
+  update:
+    online: false
+    scrape-interval: 6h
+web:
+  listen-address: ":9182"
+log:
+  level: info

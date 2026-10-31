@@ -1,0 +1,48 @@
+---
+- name: Require an API token for the simulator management API
+  ansible.builtin.assert:
+    that: sim_api_token | length >= 16
+    fail_msg: SIM_API_TOKEN must be set (>= 16 chars) in the runner environment.
+    quiet: true
+
+- name: Load fleet firmware policy
+  ansible.builtin.set_fact:
+    campus_sec_sim_firmware: "{{ (lookup('ansible.builtin.file', repo_root ~ '/fleet/firmware.yaml') | from_yaml).desired }}"
+
+- name: Create simulator data directory
+  ansible.windows.win_file:
+    path: C:\ProgramData\CampusSecSim
+    state: directory
+
+- name: Write simulator config (must exist before package install)
+  ansible.windows.win_template:
+    src: config.yaml.j2
+    dest: C:\ProgramData\CampusSecSim\config.yaml
+  no_log: true
+  notify: Restart CampusSecSim
+
+- name: Install the pinned simulator release
+  chocolatey.chocolatey.win_chocolatey:
+    name: campus-sec-sim
+    version: "{{ platform_package_version }}"
+    source: campus-release
+    state: downgrade   # converges to exactly this version, up or down (rollback path)
+
+- name: Ensure the service is running
+  ansible.windows.win_service:
+    name: CampusSecSim
+    start_mode: auto
+    state: started
+
+- name: Flush handlers before health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the simulator to report the deployed version
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host }}:{{ sim_port }}/healthz"
+    return_content: true
+  delegate_to: localhost
+  register: campus_sec_sim_health
+  until: campus_sec_sim_health.status == 200 and campus_sec_sim_health.json.version == platform_package_version
+  retries: 30
+  delay: 5

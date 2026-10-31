@@ -1,0 +1,131 @@
+---
+# Patch one ring. Invoked by .github/workflows/patch.yml once per ring, in order.
+#
+# Required extra vars:
+#   ring            0 | 1 | 2
+#   patch_run_id    unique id for this patch run (GitHub run id)
+#   approvals_file  control-node path; ring 0 writes it, later rings read it,
+#                   so every ring installs exactly the set the canary proved.
+#
+# Health gating and checkpoint rollback happen in the workflow around this play.
+
+- name: Validate inputs
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Check extra vars
+      ansible.builtin.assert:
+        that:
+          - ring | int in [0, 1, 2]
+          - patch_run_id | string is match('^[0-9A-Za-z-]+$')
+          - approvals_file is defined
+        quiet: true
+
+    - name: Ensure the ring has hosts
+      ansible.builtin.assert:
+        that: groups['ring_' ~ ring] | default([]) | length > 0
+        fail_msg: "ring {{ ring }} has no hosts; nothing to patch"
+        quiet: true
+
+# ----------------------------------------------------------------- approvals
+- name: Approve updates for the ring on WSUS
+  hosts: role_wsus
+  gather_facts: false
+  vars:
+    target_group: "ring{{ ring }}"
+  tasks:
+    - name: Ring 0 selects needed security/critical updates and approves them
+      when: ring | int == 0
+      block:
+        - name: Approve needed, non-superseded updates for ring0
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $updates = @(
+                Get-WsusUpdate -Classification Critical -Approval AnyExceptDeclined -Status FailedOrNeeded
+                Get-WsusUpdate -Classification Security -Approval AnyExceptDeclined -Status FailedOrNeeded
+            ) | Where-Object { -not $_.Update.IsSuperseded }
+            foreach ($u in $updates) {
+                Approve-WsusUpdate -Update $u -Action Install -TargetGroupName '{{ target_group }}'
+            }
+            @($updates | ForEach-Object { $_.Update.Id.UpdateId.Guid } | Sort-Object -Unique) | ConvertTo-Json -Compress
+          register: ring0_approval
+          changed_when: ring0_approval.stdout | trim not in ['', '[]']
+
+        - name: Record the approved set for later rings
+          ansible.builtin.copy:
+            dest: "{{ approvals_file }}"
+            content: "{{ (ring0_approval.stdout | trim | default('[]', true) | from_json) | to_json }}"
+            mode: "0644"
+          delegate_to: localhost
+
+    - name: Later rings promote exactly the set ring 0 proved
+      when: ring | int > 0
+      block:
+        - name: Read the approved set
+          ansible.builtin.set_fact:
+            promoted_ids: "{{ lookup('ansible.builtin.file', approvals_file) | from_json }}"
+
+        - name: Approve the same updates for this ring
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $ids = '{{ promoted_ids | to_json }}' | ConvertFrom-Json
+            $approved = 0
+            foreach ($id in $ids) {
+                $u = Get-WsusUpdate -UpdateId ([guid]$id)
+                # Declined after ring 0 (e.g. pulled during a halted run): never promote.
+                if ($u.Update.IsDeclined) { Write-Output "skip declined $id"; continue }
+                Approve-WsusUpdate -Update $u -Action Install -TargetGroupName '{{ target_group }}'
+                $approved++
+            }
+            "approved $approved of $($ids.Count)"
+          when: promoted_ids | length > 0
+          changed_when: true
+
+# ----------------------------------------------------------- checkpoints
+- name: Checkpoint ring VMs before patching
+  hosts: hyperv_hosts
+  gather_facts: false
+  tasks:
+    - name: Remove older pre-patch checkpoints and take a new one
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $name = 'prepatch-{{ patch_run_id }}'
+        foreach ($vm in '{{ groups["ring_" ~ ring] | join(",") }}'.Split(',')) {
+            Get-VMCheckpoint -VMName $vm -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like 'prepatch-*' -and $_.Name -ne $name } |
+                Remove-VMCheckpoint
+            if (-not (Get-VMCheckpoint -VMName $vm -Name $name -ErrorAction SilentlyContinue)) {
+                Checkpoint-VM -Name $vm -SnapshotName $name
+            }
+        }
+      changed_when: true
+
+# ---------------------------------------------------------------- install
+- name: Install approved updates
+  hosts: "ring_{{ ring | default('undefined') }}"
+  gather_facts: false
+  serial: "50%"           # never take a whole ring down at once
+  max_fail_percentage: 0
+  tasks:
+    - name: Install from WSUS and reboot as needed
+      ansible.windows.win_updates:
+        server_selection: managed_server
+        category_names:
+          - CriticalUpdates
+          - SecurityUpdates
+          - UpdateRollups
+        reboot: true
+        reboot_timeout: 1800
+        log_path: "{{ platform_root }}\\patch-{{ patch_run_id }}.log"
+      register: patch_result
+
+    - name: Report what was installed
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ patch_result.installed_update_count | default(0) }} installed,
+          {{ patch_result.failed_update_count | default(0) }} failed, reboot_required={{ patch_result.reboot_required }}
+
+    - name: Fail the batch on any failed update
+      ansible.builtin.assert:
+        that: (patch_result.failed_update_count | default(0)) == 0
+        quiet: true

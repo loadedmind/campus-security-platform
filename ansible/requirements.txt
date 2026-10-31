@@ -1,0 +1,5 @@
+# Control-node Python dependencies (runner on the Linux automation host).
+ansible-core==2.19.14
+pywinrm==0.5.0
+PyYAML==6.0.3
+jsonschema==4.26.0

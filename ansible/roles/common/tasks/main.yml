@@ -1,0 +1,57 @@
+---
+- name: Wait for WinRM after first boot
+  ansible.builtin.wait_for_connection:
+    timeout: 900
+    sleep: 10
+
+- name: Confirm first-boot script finished
+  ansible.windows.win_stat:
+    path: C:\campus\firstboot.done
+  register: common_firstboot
+  failed_when: not common_firstboot.stat.exists
+
+- name: Set computer name to the inventory name
+  ansible.windows.win_hostname:
+    name: "{{ inventory_hostname }}"
+  register: common_hostname
+
+- name: Reboot to apply the computer name
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+  when: common_hostname.reboot_required
+
+- name: Create platform directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ platform_root }}"
+    - "{{ platform_root }}\\dsc"
+    - "{{ platform_feed_dir }}"
+    - "{{ platform_root }}\\textfile"
+
+- name: Copy DSC configuration
+  ansible.windows.win_copy:
+    src: "{{ repo_root }}/dsc/{{ item }}"
+    dest: "{{ platform_root }}\\dsc\\{{ item }}"
+  loop:
+    - CampusNode.ps1
+    - Invoke-CampusDsc.ps1
+
+- name: Apply DSC configuration and hand drift correction to the LCM
+  # runas SYSTEM: Start-DscConfiguration opens a CIM session to localhost, which
+  # fails from an NTLM network logon (no credential delegation).
+  ansible.windows.win_shell: >-
+    & '{{ platform_root }}\dsc\Invoke-CampusDsc.ps1'
+    -Role '{{ role }}'
+    -TimeZone '{{ site_timezone }}'
+    -WsusUrl '{{ wsus_url }}'
+    -TargetGroup 'ring{{ patch_ring }}'
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+  register: common_dsc_run
+  changed_when: common_dsc_run.rc == 0 and (common_dsc_run.stdout_lines | last | from_json).changed
+  failed_when: >-
+    common_dsc_run.rc != 0 or
+    not (common_dsc_run.stdout_lines | last | from_json).in_desired_state

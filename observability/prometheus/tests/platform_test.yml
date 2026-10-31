@@ -1,0 +1,102 @@
+# Unit tests for alert rules: `promtool test rules observability/prometheus/tests/*.yml`
+# Every alert that can trigger automation has a test proving it fires, carries
+# the right remediation label, and does NOT fire when it should stay quiet.
+rule_files:
+  - ../rules/platform.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: stopped service fires with restart remediation
+    interval: 1m
+    input_series:
+      - series: 'windows_service_state{job="windows",instance="10.0.0.5:9182",host="hou01-sec01",site="hou-01",role="secapp",ring="0",service="CampusSecSim",state="running"}'
+        values: '1 1 0x6'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CampusSecSimServiceDown
+        exp_alerts: []          # still pending (for: 2m)
+      - eval_time: 5m
+        alertname: CampusSecSimServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: windows
+              instance: 10.0.0.5:9182
+              host: hou01-sec01
+              site: hou-01
+              role: secapp
+              ring: "0"
+              service: CampusSecSim
+              state: running
+              severity: critical
+              remediation: restart_sim_service
+            exp_annotations:
+              summary: CampusSecSim service not running on hou01-sec01
+
+  - name: offline devices aggregate per host and skip devices in maintenance
+    interval: 1m
+    input_series:
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0001",device_type="camera"}'
+        values: '1 0x10'
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0002",device_type="camera"}'
+        values: '1 0x10'
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0003",device_type="camera"}'
+        values: '1x10'
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0004",device_type="camera"}'
+        values: '1x10'
+      - series: 'campus_sim_device_maintenance{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0001",device_type="camera"}'
+        values: '0x10'
+      - series: 'campus_sim_device_maintenance{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0002",device_type="camera"}'
+        values: '0 1x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: DevicesOffline
+        exp_alerts:
+          - exp_labels:
+              host: hou01-sec01
+              site: hou-01
+              severity: warning
+              remediation: reboot_offline_devices
+            exp_annotations:
+              summary: 1 device(s) offline on hou01-sec01
+      - eval_time: 7m
+        alertname: MassDeviceOutage
+        exp_alerts: []          # 2 of 4 down is not > 50%
+
+  - name: mass outage pages a human and carries no remediation label
+    interval: 1m
+    input_series:
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou02-sec01",site="hou-02",device_id="door-0001",device_type="door"}'
+        values: '0x10'
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou02-sec01",site="hou-02",device_id="door-0002",device_type="door"}'
+        values: '0x10'
+      - series: 'campus_sim_device_up{job="campus_sim",host="hou02-sec01",site="hou-02",device_id="door-0003",device_type="door"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MassDeviceOutage
+        exp_alerts:
+          - exp_labels:
+              host: hou02-sec01
+              site: hou-02
+              severity: critical
+            exp_annotations:
+              summary: More than half of the devices on hou02-sec01 are offline
+
+  - name: hitting the remediation cap escalates
+    interval: 1m
+    input_series:
+      - series: 'remediator_suppressed_total{job="remediator",instance="remediator:8080",remediation="restart_sim_service",reason="rate_limited"}'
+        values: '0 0 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RemediationSuppressed
+        exp_alerts:
+          - exp_labels:
+              job: remediator
+              instance: remediator:8080
+              remediation: restart_sim_service
+              reason: rate_limited
+              severity: critical
+            exp_annotations:
+              summary: Auto-remediation restart_sim_service hit its hourly cap; a human must look

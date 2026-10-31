@@ -1,0 +1,30 @@
+---
+# Remediation: CampusSecSim service stopped. Run with --limit <host>.
+- name: Restart CampusSecSim
+  hosts: role_secapp
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Capture service state before acting
+      ansible.windows.win_service_info:
+        name: CampusSecSim
+      register: before
+
+    - name: Fail fast when the service is not installed (needs a deploy, not a restart)
+      ansible.builtin.assert:
+        that: before.exists
+        fail_msg: CampusSecSim is not installed on {{ inventory_hostname }}; escalate to a redeploy.
+
+    - name: Start the service
+      ansible.windows.win_service:
+        name: CampusSecSim
+        state: started
+
+    - name: Confirm the API answers
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ sim_port }}/healthz"
+      delegate_to: localhost
+      register: health
+      until: health.status == 200
+      retries: 12
+      delay: 5

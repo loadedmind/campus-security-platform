@@ -1,0 +1,81 @@
+# Monthly OS patching, ring by ring, with no person touching a host:
+#   ring 0 (canary) -> soak -> ring 1 -> soak -> ring 2 (incl. core)
+# Ring 0 decides the update set; later rings install exactly that set.
+# Soak time is the wait timer on the patch-ring1 / patch-ring2 environments.
+name: patch
+
+on:
+  schedule:
+    # Every Wednesday 08:17 UTC; the window job keeps only the Wednesday after
+    # Patch Tuesday (day 9-15). Cron ORs day-of-month with day-of-week, so the
+    # day-of-month check cannot live in the cron expression itself.
+    - cron: "17 8 * * 3"
+  workflow_dispatch:
+    inputs:
+      start_ring:
+        description: Start at ring (resume after a halted run)
+        type: choice
+        options: ["0", "1", "2"]
+        default: "0"
+      approvals_run_id:
+        description: Run id whose ring-0 approvals to promote (required when start_ring > 0)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patch
+  cancel-in-progress: false
+
+jobs:
+  window:
+    name: patch window
+    runs-on: ubuntu-24.04
+    outputs:
+      open: ${{ steps.w.outputs.open }}
+    steps:
+      - id: w
+        run: |
+          day=$(date -u +%-d)
+          if [[ "$GITHUB_EVENT_NAME" != "schedule" ]] || (( day >= 9 && day <= 15 )); then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"
+            echo "Not the Wednesday after Patch Tuesday (day $day); skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  ring0:
+    needs: window
+    if: needs.window.outputs.open == 'true' && (github.event_name == 'schedule' || inputs.start_ring == '0')
+    uses: ./.github/workflows/_patch-ring.yml
+    with:
+      ring: 0
+      environment: patch-ring0
+      approvals_run_id: ${{ github.run_id }}
+    secrets: inherit
+
+  ring1:
+    needs: [window, ring0]
+    if: >-
+      always() && needs.window.outputs.open == 'true' &&
+      (needs.ring0.result == 'success' || (needs.ring0.result == 'skipped' && inputs.start_ring == '1'))
+    uses: ./.github/workflows/_patch-ring.yml
+    with:
+      ring: 1
+      environment: patch-ring1
+      approvals_run_id: ${{ inputs.approvals_run_id || github.run_id }}
+    secrets: inherit
+
+  ring2:
+    needs: [window, ring1]
+    if: >-
+      always() && needs.window.outputs.open == 'true' &&
+      (needs.ring1.result == 'success' || (needs.ring1.result == 'skipped' && inputs.start_ring == '2'))
+    uses: ./.github/workflows/_patch-ring.yml
+    with:
+      ring: 2
+      environment: patch-ring2
+      approvals_run_id: ${{ inputs.approvals_run_id || github.run_id }}
+    secrets: inherit

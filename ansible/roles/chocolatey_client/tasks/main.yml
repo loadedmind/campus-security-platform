@@ -1,0 +1,45 @@
+---
+# Packages come only from the release the site pins. The "feed" is a local
+# folder on each host, filled from GitHub Release assets that the control node
+# downloaded and checksum-verified. No host ever reaches a public package feed.
+#
+# Trade-off: at fleet scale this should be an HTTP NuGet feed (ProGet, Nexus,
+# Artifactory). Swapping is a change to the source below, nothing else.
+- name: Fail early when the release has not been staged on the control node
+  ansible.builtin.stat:
+    path: "{{ release_cache_dir }}/{{ platform_release_effective }}/SHA256SUMS"
+  delegate_to: localhost
+  register: chocolatey_client_staged
+  failed_when: not chocolatey_client_staged.stat.exists
+
+- name: Copy release packages into the host feed
+  ansible.windows.win_copy:
+    src: "{{ release_cache_dir }}/{{ platform_release_effective }}/"
+    dest: "{{ platform_feed_dir }}\\"
+
+- name: Verify package checksums on the host
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $feed = '{{ platform_feed_dir }}'
+    $bad = @()
+    Get-Content (Join-Path $feed 'SHA256SUMS') | ForEach-Object {
+        $hash, $name = $_ -split '\s+', 2
+        $path = Join-Path $feed $name.Trim()
+        if (-not (Test-Path $path)) { $bad += "missing $name"; return }
+        if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) { $bad += "mismatch $name" }
+    }
+    if ($bad) { throw ($bad -join '; ') }
+    'ok'
+  changed_when: false
+
+- name: Remove the public community source
+  chocolatey.chocolatey.win_chocolatey_source:
+    name: chocolatey
+    state: absent
+
+- name: Register the release feed
+  chocolatey.chocolatey.win_chocolatey_source:
+    name: campus-release
+    source: "{{ platform_feed_dir }}"
+    priority: 1
+    state: present

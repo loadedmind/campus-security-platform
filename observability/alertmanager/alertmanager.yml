@@ -1,0 +1,48 @@
+# Two consumers for every alert:
+#   remediator  only alerts carrying a `remediation` label; repeats every 15m so
+#               the relay can retry within its cooldown / hourly cap
+#   human       everything (the automation acting is still worth knowing about)
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: human
+  group_by: [alertname, site, host]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - receiver: remediator
+      matchers:
+        - remediation=~".+"
+      group_by: [alertname, site, host, device_type]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 15m
+      continue: true
+    - receiver: human
+
+inhibit_rules:
+  # Host down: per-host symptoms are noise.
+  - source_matchers: [alertname="HostDown"]
+    target_matchers: [alertname=~"CampusSecSim.*|SystemDiskLow|DevicesOffline|DeviceFirmwareDrift"]
+    equal: [host]
+  # Upstream outage: do not power-cycle endpoints one by one.
+  - source_matchers: [alertname="MassDeviceOutage"]
+    target_matchers: [alertname=~"DevicesOffline|DeviceFirmwareDrift"]
+    equal: [host]
+
+receivers:
+  - name: remediator
+    webhook_configs:
+      - url: http://remediator:8080/alertmanager
+        send_resolved: false
+        max_alerts: 50
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/secrets/webhook_token
+
+  # Wire to the on-call channel (email, Slack, PagerDuty, ntfy). Left without a
+  # notifier in the public repo; alerts are still visible in the Alertmanager UI.
+  - name: human

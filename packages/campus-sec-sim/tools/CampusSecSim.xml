@@ -1,0 +1,22 @@
+<!-- WinSW 2.x service definition. CampusSecSim.exe is WinSW-x64.exe renamed;
+     WinSW reads the XML with the same base name. -->
+<service>
+  <id>CampusSecSim</id>
+  <name>Campus Security Simulator</name>
+  <description>Simulated VMS / access-control head end (campus-security-platform).</description>
+  <executable>%BASE%\campus-sec-sim.exe</executable>
+  <arguments>--config "%ProgramData%\CampusSecSim\config.yaml"</arguments>
+  <startmode>Automatic</startmode>
+  <stoptimeout>20 sec</stoptimeout>
+  <logpath>%ProgramData%\CampusSecSim\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+  <!-- SCM-level self-healing for crashes. A clean stop is NOT restarted here;
+       that case is caught by the CampusSecSimServiceDown alert and remediated. -->
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="none" />
+  <resetfailure>1 hour</resetfailure>
+</service>

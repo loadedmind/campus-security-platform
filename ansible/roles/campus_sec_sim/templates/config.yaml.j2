@@ -1,0 +1,17 @@
+# Managed by campus-security-platform (Ansible role campus_sec_sim). Do not edit on the host.
+site: {{ site }}
+listen_host: 0.0.0.0
+listen_port: {{ sim_port }}
+api_token: "{{ sim_api_token }}"
+devices:
+{% for device_type, count in (sim_devices | dictsort) %}
+  {{ device_type }}: {{ count }}
+{% endfor %}
+initial_firmware:
+{% for device_type, version in (campus_sec_sim_firmware | dictsort) %}
+  {{ device_type }}: "{{ version }}"
+{% endfor %}
+access_events_per_minute: 30
+access_denied_ratio: 0.03
+reboot_seconds: 20
+firmware_update_seconds: 45

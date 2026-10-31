@@ -1,0 +1,45 @@
+# Tests the GENERATED firmware rules. CI renders them first:
+#   python scripts/render_firmware_rules.py --out observability/prometheus/rules-generated/firmware.rules.yml
+rule_files:
+  - ../rules-generated/firmware.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: drifted camera fires once per host and type
+    interval: 1m
+    input_series:
+      - series: 'campus_sim_device_firmware_info{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0001",device_type="camera",version="2.8.0"}'
+        values: '1x15'
+      - series: 'campus_sim_device_firmware_info{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0002",device_type="camera",version="2.7.99"}'
+        values: '1x15'
+      - series: 'campus_sim_device_maintenance{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0001",device_type="camera"}'
+        values: '0x15'
+      - series: 'campus_sim_device_maintenance{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0002",device_type="camera"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: DeviceFirmwareDrift
+        exp_alerts:
+          - exp_labels:
+              host: hou01-sec01
+              site: hou-01
+              device_type: camera
+              severity: warning
+              remediation: push_firmware
+              desired_version: 2.8.0
+            exp_annotations:
+              summary: 1 camera device(s) on hou01-sec01 not on firmware 2.8.0
+              runbook_url: https://github.com/loadedmind/campus-security-platform/blob/main/docs/runbooks/firmware-rollout.md
+
+  - name: device mid-update does not count as drift
+    interval: 1m
+    input_series:
+      - series: 'campus_sim_device_firmware_info{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0003",device_type="camera",version="2.7.0"}'
+        values: '1x15'
+      - series: 'campus_sim_device_maintenance{job="campus_sim",host="hou01-sec01",site="hou-01",device_id="camera-0003",device_type="camera"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: DeviceFirmwareDrift
+        exp_alerts: []

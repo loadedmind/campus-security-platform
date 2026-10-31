@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "campus-sec-sim"
+dynamic = ["version"]
+description = "Simulated VMS/access-control head end and IoT device fleet (stand-in for a commercial platform)."
+requires-python = ">=3.11"
+dependencies = [
+  "prometheus-client>=0.20,<1.0",
+  "PyYAML>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+campus-sec-sim = "campus_sec_sim.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "campus_sec_sim.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,17 @@
+---
+# WSUS role, ring target groups and firewall are applied by DSC (role common).
+# This role only kicks off the very first catalog sync, which DSC deliberately
+# does not do (a Synchronize=true resource would re-trigger on every LCM check).
+- name: Start initial WSUS synchronization if it has never run
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $sub = (Get-WsusServer).GetSubscription()
+    if ($sub.LastSynchronizationTime.Year -lt 2000 -and $sub.GetSynchronizationStatus() -eq 'NotProcessing') {
+        $sub.StartSynchronization()
+        'started'
+    } else {
+        'skipped'
+    }
+  register: wsus_server_sync
+  changed_when: "'started' in wsus_server_sync.stdout"
+  notify: Report initial WSUS sync

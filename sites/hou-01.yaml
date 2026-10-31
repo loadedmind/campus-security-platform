@@ -1,0 +1,19 @@
+# Canary campus: receives every patch and release first.
+name: hou-01
+kind: campus
+display_name: Houston Campus 01 (canary)
+timezone: Central Standard Time
+image: ws2025-core-2026.11
+patch_ring: 0
+hosts:
+  - name: hou01-sec01
+    role: secapp
+    cpu: 2
+    memory_gb: 2
+platform:
+  release: v1.0.0
+  devices:
+    camera: 24
+    door: 12
+    reader: 12
+    controller: 4

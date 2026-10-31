@@ -1,0 +1,42 @@
+# Prometheus for the campus security platform (runs on the automation host).
+# Targets are NOT listed here: scripts/render_inventory.py writes file_sd JSON
+# from Terraform outputs, so a new campus is monitored the moment it is built.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    platform: campus-security
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+  - /etc/prometheus/rules-generated/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: windows
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/windows.json"]
+        refresh_interval: 1m
+
+  - job_name: campus_sim
+    # The simulator exports its own `site` label; trust it over the target label.
+    honor_labels: true
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/campus_sim.json"]
+        refresh_interval: 1m
+
+  - job_name: remediator
+    static_configs:
+      - targets: ["remediator:8080"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

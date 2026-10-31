@@ -1,0 +1,74 @@
+# Destroying a site is never automatic. Remove sites/<name>.yaml in a PR (the
+# deploy run flags it), then run this with the site name typed twice.
+name: teardown
+
+on:
+  workflow_dispatch:
+    inputs:
+      site:
+        description: Site to destroy
+        required: true
+        type: string
+      confirm:
+        description: Type the site name again to confirm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SITE: ${{ inputs.site }}
+  CONFIRM: ${{ inputs.confirm }}
+  CAMPUS_STATE_DIR: ${{ vars.CAMPUS_STATE_DIR || '/var/lib/campus-platform' }}
+  HYPERV_HOST: ${{ vars.HYPERV_HOST }}
+  PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL || 'http://127.0.0.1:19090' }}
+
+jobs:
+  destroy:
+    runs-on: [self-hosted, linux, campus-lab]
+    environment: lab-infra
+    concurrency:
+      group: site-${{ inputs.site }}
+      cancel-in-progress: false
+    env:
+      HYPERV_USER: ${{ secrets.HYPERV_USER }}
+      HYPERV_PASSWORD: ${{ secrets.HYPERV_PASSWORD }}
+    steps:
+      - name: Guard
+        run: |
+          set -euo pipefail
+          [[ "$SITE" =~ ^[a-z]{3}-[0-9]{2}$ ]] || { echo "::error::only campus sites can be torn down here"; exit 1; }
+          [[ "$SITE" == "$CONFIRM" ]] || { echo "::error::confirmation does not match"; exit 1; }
+          [[ -f "$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate" ]] || { echo "::error::no state for $SITE"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # needed to recover a deleted site file from history
+      - uses: ./.github/actions/setup-controller
+
+      - name: terraform destroy
+        run: |
+          set -euo pipefail
+          # The site file may already be deleted from main; destroy from the
+          # last outputs instead of the current tree.
+          site_file="$GITHUB_WORKSPACE/sites/$SITE.yaml"
+          if [[ ! -f "$site_file" ]]; then
+            git log --diff-filter=D -n 1 --format=%H -- "sites/$SITE.yaml" | head -1 > "$RUNNER_TEMP/sha"
+            sha="$(cat "$RUNNER_TEMP/sha")"
+            [[ -n "$sha" ]] || { echo "::error::cannot find sites/$SITE.yaml in history"; exit 1; }
+            git show "${sha}^:sites/$SITE.yaml" > "$RUNNER_TEMP/$SITE.yaml"
+            site_file="$RUNNER_TEMP/$SITE.yaml"
+          fi
+          terraform -chdir=terraform/stacks/site init -input=false -reconfigure \
+            -backend-config="path=$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate"
+          terraform -chdir=terraform/stacks/site destroy -input=false -auto-approve -lock-timeout=10m \
+            -var "site_file=$site_file" -var "hyperv_host=$HYPERV_HOST"
+
+      - name: Remove site from inventory and monitoring
+        run: |
+          set -euo pipefail
+          rm -f "$CAMPUS_STATE_DIR/outputs/$SITE.json" "$CAMPUS_STATE_DIR/lkg/$SITE"
+          mv "$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate" "$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate.destroyed-$(date -u +%Y%m%dT%H%M%SZ)"
+          ./scripts/render_state.sh
+          echo "### \`$SITE\` destroyed and removed from monitoring" >> "$GITHUB_STEP_SUMMARY"

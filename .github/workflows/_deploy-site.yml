@@ -1,0 +1,151 @@
+# Converge one site: plan -> (approve) -> apply -> configure -> smoke test,
+# with automatic rollback to the last known-good release if the smoke test fails.
+name: _deploy-site
+
+on:
+  workflow_call:
+    inputs:
+      site:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SITE: ${{ inputs.site }}
+  CAMPUS_STATE_DIR: ${{ vars.CAMPUS_STATE_DIR || '/var/lib/campus-platform' }}
+  HYPERV_HOST: ${{ vars.HYPERV_HOST }}
+  PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL || 'http://127.0.0.1:19090' }}
+
+jobs:
+  plan:
+    name: plan ${{ inputs.site }}
+    runs-on: [self-hosted, linux, campus-lab]
+    concurrency:
+      group: site-${{ inputs.site }}
+      cancel-in-progress: false
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    env:
+      HYPERV_USER: ${{ secrets.HYPERV_USER }}
+      HYPERV_PASSWORD: ${{ secrets.HYPERV_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-controller
+      - name: terraform init (per-site state)
+        run: |
+          set -euo pipefail
+          [[ "$SITE" =~ ^([a-z]{3}-[0-9]{2}|core)$ ]] || { echo "::error::bad site name"; exit 1; }
+          mkdir -p "$CAMPUS_STATE_DIR/tfstate" "$CAMPUS_STATE_DIR/plans"
+          terraform -chdir=terraform/stacks/site init -input=false -reconfigure \
+            -backend-config="path=$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate"
+      - name: terraform plan
+        id: plan
+        run: |
+          set -uo pipefail
+          plan_file="$CAMPUS_STATE_DIR/plans/$SITE-$GITHUB_RUN_ID.tfplan"
+          terraform -chdir=terraform/stacks/site plan -input=false -lock-timeout=10m -detailed-exitcode \
+            -var "site_file=$GITHUB_WORKSPACE/sites/$SITE.yaml" \
+            -var "hyperv_host=$HYPERV_HOST" \
+            -out "$plan_file"
+          rc=$?
+          if [[ $rc -eq 1 ]]; then exit 1; fi
+          echo "has_changes=$([[ $rc -eq 2 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Terraform plan: \`$SITE\`"
+            echo '```'
+            terraform -chdir=terraform/stacks/site show -no-color "$plan_file" | tail -n 200
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: apply + configure ${{ inputs.site }}
+    needs: plan
+    runs-on: [self-hosted, linux, campus-lab]
+    # Infrastructure changes wait for a reviewer; config-only runs do not.
+    environment: ${{ needs.plan.outputs.has_changes == 'true' && 'lab-infra' || 'lab-config' }}
+    concurrency:
+      group: site-${{ inputs.site }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      HYPERV_USER: ${{ secrets.HYPERV_USER }}
+      HYPERV_PASSWORD: ${{ secrets.HYPERV_PASSWORD }}
+      LAB_ADMIN_PASSWORD: ${{ secrets.LAB_ADMIN_PASSWORD }}
+      SIM_API_TOKEN: ${{ secrets.SIM_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-controller
+
+      - name: terraform apply (saved plan)
+        if: needs.plan.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/stacks/site init -input=false -reconfigure \
+            -backend-config="path=$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate"
+          terraform -chdir=terraform/stacks/site apply -input=false -lock-timeout=10m \
+            "$CAMPUS_STATE_DIR/plans/$SITE-$GITHUB_RUN_ID.tfplan"
+          rm -f "$CAMPUS_STATE_DIR/plans/$SITE-$GITHUB_RUN_ID.tfplan"
+
+      - name: Export outputs + render inventory, targets, rules
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/stacks/site init -input=false -reconfigure \
+            -backend-config="path=$CAMPUS_STATE_DIR/tfstate/$SITE.tfstate" >/dev/null
+          mkdir -p "$CAMPUS_STATE_DIR/outputs"
+          terraform -chdir=terraform/stacks/site output -json site > "$CAMPUS_STATE_DIR/outputs/$SITE.json.tmp"
+          mv "$CAMPUS_STATE_DIR/outputs/$SITE.json.tmp" "$CAMPUS_STATE_DIR/outputs/$SITE.json"
+          ./scripts/render_state.sh
+
+      - name: Stage pinned release
+        id: release
+        run: |
+          set -euo pipefail
+          release="$(python3 -c "import yaml,sys; print(yaml.safe_load(open('sites/$SITE.yaml'))['platform']['release'])")"
+          ./scripts/stage_release.sh "$release"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Configure hosts (Ansible + DSC)
+        id: configure
+        working-directory: ansible
+        run: ansible-playbook playbooks/site.yml --limit "site_${SITE//-/_}"
+
+      - name: Smoke test
+        id: smoke
+        run: ./scripts/smoke_test.sh "$SITE"
+
+      - name: Record last known-good release
+        if: success()
+        env:
+          RELEASE: ${{ steps.release.outputs.release }}
+        run: |
+          mkdir -p "$CAMPUS_STATE_DIR/lkg"
+          echo "$RELEASE" > "$CAMPUS_STATE_DIR/lkg/$SITE"
+          echo "### \`$SITE\` converged on $RELEASE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Roll back to last known-good release
+        if: failure() && (steps.configure.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        env:
+          FAILED_RELEASE: ${{ steps.release.outputs.release }}
+        run: |
+          set -euo pipefail
+          lkg_file="$CAMPUS_STATE_DIR/lkg/$SITE"
+          if [[ ! -s "$lkg_file" ]]; then
+            echo "::error::no last known-good release for $SITE (first deploy); nothing to roll back to"
+            exit 1
+          fi
+          lkg="$(cat "$lkg_file")"
+          if [[ "$lkg" == "$FAILED_RELEASE" ]]; then
+            echo "::error::failure is not caused by a release change ($lkg); infra/config fix required"
+            exit 1
+          fi
+          echo "::warning::rolling $SITE back from $FAILED_RELEASE to $lkg"
+          ./scripts/stage_release.sh "$lkg"
+          (cd ansible && ansible-playbook playbooks/site.yml --limit "site_${SITE//-/_}" -e "platform_release_override=$lkg")
+          ./scripts/smoke_test.sh "$SITE"
+          echo "### \`$SITE\` rolled back to $lkg after $FAILED_RELEASE failed" >> "$GITHUB_STEP_SUMMARY"
+          # The deploy still failed: the site file pins a release that is not running.
+          exit 1

@@ -1,0 +1,30 @@
+---
+# Restore a ring to its pre-patch checkpoint. Run by patch.yml when the
+# post-patch health gate fails. Extra vars: ring, patch_run_id.
+- name: Restore pre-patch checkpoints
+  hosts: hyperv_hosts
+  gather_facts: false
+  tasks:
+    - name: Restore and start each VM in the ring
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $name = 'prepatch-{{ patch_run_id }}'
+        foreach ($vm in '{{ groups["ring_" ~ ring] | join(",") }}'.Split(',')) {
+            $cp = Get-VMCheckpoint -VMName $vm -Name $name -ErrorAction SilentlyContinue
+            if (-not $cp) { Write-Warning "$vm has no checkpoint $name"; continue }
+            Restore-VMCheckpoint -VMSnapshot $cp -Confirm:$false
+            # Production checkpoints restore to a powered-off state.
+            if ((Get-VM -Name $vm).State -ne 'Running') { Start-VM -Name $vm }
+            "restored $vm"
+        }
+      register: restore
+      changed_when: "'restored' in restore.stdout"
+
+- name: Wait for restored hosts
+  hosts: "ring_{{ ring | default('undefined') }}"
+  gather_facts: false
+  tasks:
+    - name: Wait for WinRM
+      ansible.builtin.wait_for_connection:
+        timeout: 900
+        sleep: 15

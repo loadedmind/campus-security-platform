@@ -1,0 +1,11 @@
+---
+# The Hyper-V host itself; used by the patch pipeline for VM checkpoints.
+ansible_connection: winrm
+ansible_port: 5986
+ansible_winrm_scheme: https
+ansible_winrm_transport: ntlm
+ansible_winrm_server_cert_validation: ignore
+ansible_winrm_operation_timeout_sec: 300
+ansible_winrm_read_timeout_sec: 330
+ansible_user: "{{ lookup('ansible.builtin.env', 'HYPERV_USER') }}"
+ansible_password: "{{ lookup('ansible.builtin.env', 'HYPERV_PASSWORD') }}"

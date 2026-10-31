@@ -1,0 +1,72 @@
+# Monitoring and the remediation relay are deployed by the same pipeline as
+# everything else. Rule changes ship only after promtool tests pass in ci.
+name: observability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "observability/**"
+      - "remediation/**"
+      - "fleet/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observability
+  cancel-in-progress: false
+
+env:
+  CAMPUS_STATE_DIR: ${{ vars.CAMPUS_STATE_DIR || '/var/lib/campus-platform' }}
+  HYPERV_HOST: ${{ vars.HYPERV_HOST }}
+  PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL || 'http://127.0.0.1:19090' }}
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: [self-hosted, linux, campus-lab]
+    environment: lab-config
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-controller
+        with:
+          terraform: "false"
+
+      - name: Render targets and generated rules
+        run: |
+          set -euo pipefail
+          if compgen -G "$CAMPUS_STATE_DIR/outputs/*.json" > /dev/null; then
+            ./scripts/render_state.sh
+          else
+            mkdir -p "$CAMPUS_STATE_DIR/prometheus/targets" "$CAMPUS_STATE_DIR/prometheus/rules-generated"
+            for f in windows campus_sim; do
+              [[ -f "$CAMPUS_STATE_DIR/prometheus/targets/$f.json" ]] || echo '[]' > "$CAMPUS_STATE_DIR/prometheus/targets/$f.json"
+            done
+            python3 scripts/render_firmware_rules.py \
+              --out "$CAMPUS_STATE_DIR/prometheus/rules-generated/firmware.rules.yml"
+          fi
+
+      - name: docker compose up
+        working-directory: observability
+        run: docker compose up -d --build --remove-orphans
+
+      - name: Reload Prometheus and Alertmanager config
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "$PROMETHEUS_URL/-/reload"
+          curl -fsS -X POST "http://127.0.0.1:19093/-/reload"
+
+      - name: Health checks
+        run: |
+          set -euo pipefail
+          for url in "$PROMETHEUS_URL/-/ready" "http://127.0.0.1:19093/-/ready" "http://127.0.0.1:13000/api/health"; do
+            for _ in $(seq 1 30); do curl -fsS "$url" >/dev/null && break; sleep 2; done
+            curl -fsS "$url" >/dev/null && echo "ok $url"
+          done
+          python3 scripts/prom_wait.py --prometheus "$PROMETHEUS_URL" \
+            --expr 'up{job="remediator"}' --expect all-ones --timeout 120 --interval 10

@@ -1,0 +1,35 @@
+# Golden image build. Needs a second, OPTIONAL self-hosted runner on the
+# Hyper-V host itself (labels: self-hosted, windows, hyperv-host), because
+# Packer's hyperv-iso builder must run locally. Without that runner, run
+# scripts/build-golden-image.ps1 on the host by hand (same result).
+name: image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Image version (yyyy.MM); default = current month
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, windows, hyperv-host]
+    timeout-minutes: 300
+    environment: lab-infra
+    env:
+      PKR_VAR_admin_password: ${{ secrets.LAB_ADMIN_PASSWORD }}
+      ISO_PATH: ${{ vars.WS2025_ISO_PATH || 'C:\campus-lab\iso\ws2025-eval.iso' }}
+      IMAGE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and publish image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $params = @{ IsoPath = $env:ISO_PATH }
+          if ($env:IMAGE_VERSION) { $params.Version = $env:IMAGE_VERSION }
+          ./scripts/build-golden-image.ps1 @params

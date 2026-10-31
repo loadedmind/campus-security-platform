@@ -1,0 +1,12 @@
+# Desired firmware per device type, fleet-wide.
+#
+# This file is the policy. Prometheus rules are generated from it
+# (scripts/render_firmware_rules.py) and the push_firmware remediation reads it,
+# so a firmware rollout is a PR that bumps a version here: drift alerts fire for
+# every device below the new version and the remediation loop converges them,
+# subject to the per-target caps in remediation/catalog.yaml.
+desired:
+  camera: 2.8.0
+  door: 1.4.2
+  reader: 1.9.3
+  controller: 4.2.1

@@ -1,0 +1,7 @@
+---
+- name: Restart CampusSecSim
+  ansible.windows.win_service:
+    name: CampusSecSim
+    state: restarted
+  # On first install the service does not exist yet when the config task notifies.
+  failed_when: false

@@ -1,0 +1,151 @@
+{
+  "uid": "campus-fleet-overview",
+  "title": "Campus Fleet Overview",
+  "tags": ["campus-security-platform"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "site",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+        "query": { "query": "label_values(up{job=\"windows\"}, site)", "refId": "site" },
+        "definition": "label_values(up{job=\"windows\"}, site)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Hosts up",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(up{job=\"windows\",site=~\"$site\"}) / count(up{job=\"windows\",site=~\"$site\"})" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null }, { "color": "orange", "value": 0.95 }, { "color": "green", "value": 1 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Devices online",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(campus_sim_device_up{site=~\"$site\"}) / count(campus_sim_device_up{site=~\"$site\"})" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null }, { "color": "orange", "value": 0.98 }, { "color": "green", "value": 0.999 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Firing alerts (human)",
+      "description": "Alerts without a remediation label: these need a person.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "count(ALERTS{alertstate=\"firing\",remediation=\"\"}) or vector(0)" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Auto-remediations (24h)",
+      "description": "Actions the platform took instead of on-call.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(increase(remediator_dispatch_total{result=\"ok\"}[24h])) or vector(0)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Hosts with pending updates",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "count(count by (host) (windows_update_pending_info{deployment_action=\"installation\",site=~\"$site\"})) or vector(0)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value" }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Release and image per host",
+      "description": "From the release marker written by every deploy. Mixed releases = rollout in progress or a failed rollback.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "campus_platform_release_info{site=~\"$site\"}", "format": "table", "instant": true }],
+      "transformations": [
+        { "id": "organize", "options": {
+          "excludeByName": { "Time": true, "Value": true, "__name__": true, "instance": true, "job": true, "role": true },
+          "indexByName": { "site": 0, "host": 1, "ring": 2, "release": 3, "image": 4, "commit": 5 }
+        } }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Firmware versions in the fleet",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "count by (device_type, version) (campus_sim_device_firmware_info{site=~\"$site\"})", "format": "table", "instant": true }],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "devices" } } }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Devices offline by site",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "count by (site) (campus_sim_device_up{site=~\"$site\"} == 0) or sum by (site) (campus_sim_device_up{site=~\"$site\"} * 0)", "legendFormat": "{{site}}" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Automated remediations by action",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (remediation) (increase(remediator_dispatch_total{result=\"ok\"}[1h]))", "legendFormat": "{{remediation}}" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Access events per minute by result",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "campus-prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (site, result) (rate(campus_sim_access_events_total{site=~\"$site\"}[5m])) * 60", "legendFormat": "{{site}} {{result}}" }]
+    }
+  ]
+}

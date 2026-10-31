@@ -1,0 +1,32 @@
+---
+# WinRM over HTTPS with NTLM (message encryption on top of TLS).
+ansible_connection: winrm
+ansible_port: 5986
+ansible_winrm_scheme: https
+ansible_winrm_transport: ntlm
+# Lab only: hosts present a self-signed certificate created at first boot.
+# Production: enrol from the internal CA and validate (see docs/adr/0002).
+ansible_winrm_server_cert_validation: ignore
+ansible_winrm_operation_timeout_sec: 120
+ansible_winrm_read_timeout_sec: 150
+ansible_user: Administrator
+ansible_password: "{{ lookup('ansible.builtin.env', 'LAB_ADMIN_PASSWORD') }}"
+
+# Where the platform keeps its files on every host.
+platform_root: 'C:\ProgramData\CampusPlatform'
+platform_feed_dir: 'C:\ProgramData\CampusPlatform\feed'
+
+# Release artifacts (nupkg + SHA256SUMS) downloaded on the control node.
+release_cache_dir: "{{ lookup('ansible.builtin.env', 'CAMPUS_STATE_DIR') }}/releases"
+
+windows_exporter_version: "{{ (lookup('ansible.builtin.file', repo_root ~ '/packages/upstream.json') | from_json).windows_exporter.version }}"
+windows_exporter_collectors: cpu,logical_disk,memory,net,os,service,system,textfile,update
+
+# WSUS is the single core host with role wsus.
+wsus_server_ip: "{{ hostvars[groups['role_wsus'][0]].ansible_host }}"
+wsus_url: "http://{{ wsus_server_ip }}:8530"
+
+# Release actually deployed. The rollback step sets platform_release_override
+# to the last known-good release; otherwise the site file decides.
+platform_release_effective: "{{ platform_release_override | default(platform_release, true) }}"
+platform_package_version: "{{ platform_release_effective | regex_replace('^v', '') }}"

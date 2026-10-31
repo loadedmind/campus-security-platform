@@ -1,0 +1,42 @@
+# Remediation catalog: the ONLY actions the automation may take on its own.
+#
+# An alert opts in by carrying a `remediation: <key>` label (set in the
+# Prometheus rule). The remediator relay and the remediate workflow both
+# validate against this file, so adding automation is a reviewed PR here.
+#
+#   playbook      ansible/remediation/<playbook>, run with --limit <host>
+#   pass_labels   alert labels forwarded as extra vars (allowlist; validated)
+#   cooldown_s    minimum seconds between dispatches for the same target
+#   max_per_hour  hard cap per target; beyond this the relay stops acting and
+#                 the RemediationSuppressed alert pages a human
+#
+# Alerts that feed these are aggregated per host, never per device: a firmware
+# bump or a switch failure must not fan out into hundreds of workflow runs.
+remediations:
+  restart_sim_service:
+    description: Restart the CampusSecSim Windows service on the host.
+    playbook: restart_service.yml
+    pass_labels: []
+    cooldown_s: 300
+    max_per_hour: 3
+
+  reboot_offline_devices:
+    description: Power-cycle offline field devices on the host (skipped when the outage looks site-wide).
+    playbook: reboot_offline_devices.yml
+    pass_labels: []
+    cooldown_s: 600
+    max_per_hour: 2
+
+  push_firmware:
+    description: Converge drifted devices of one type to fleet/firmware.yaml in batches.
+    playbook: push_firmware.yml
+    pass_labels: [device_type]
+    cooldown_s: 900
+    max_per_hour: 2
+
+  cleanup_disk:
+    description: Clear temp files, old logs and superseded component store data.
+    playbook: cleanup_disk.yml
+    pass_labels: []
+    cooldown_s: 3600
+    max_per_hour: 1

@@ -1,0 +1,16 @@
+---
+# Publishes "what is deployed here" as a metric through the windows_exporter
+# textfile collector, so Grafana shows the release and image per host and a
+# half-finished rollout is visible at a glance.
+- name: Write release marker metric
+  vars:
+    release_marker_commit: "{{ lookup('ansible.builtin.env', 'GITHUB_SHA') | default('local', true) | truncate(12, true, '') }}"
+    release_marker_labels: >-
+      release="{{ platform_release_effective }}",image="{{ image }}",commit="{{ release_marker_commit }}"
+  ansible.windows.win_copy:
+    dest: "{{ platform_root }}\\textfile\\campus_platform_release.prom"
+    # The textfile collector requires the file to end with a newline; `|` keeps one.
+    content: |
+      # HELP campus_platform_release_info Platform release and golden image deployed to this host.
+      # TYPE campus_platform_release_info gauge
+      campus_platform_release_info{ {{- release_marker_labels -}} } 1

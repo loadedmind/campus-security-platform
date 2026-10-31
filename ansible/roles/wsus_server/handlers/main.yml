@@ -1,0 +1,8 @@
+---
+- name: Report initial WSUS sync
+  ansible.builtin.debug:
+    msg: >-
+      Initial WSUS sync started. Metadata for all products takes hours; the
+      patch pipeline's approval step finds nothing to approve until it
+      completes. Narrow Products in dsc/CampusNode.ps1 once Get-WsusProduct
+      shows the exact titles needed.

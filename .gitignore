@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Build outputs
+build/
+dist/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# Ansible
+ansible/.collections/
+ansible/inventory/hosts.yml
+
+# Packer
+packer_cache/
+
+# Generated at deploy/CI time
+observability/prometheus/rules-generated/
+
+# Tool caches
+.ansible/
+ansible/.ansible/

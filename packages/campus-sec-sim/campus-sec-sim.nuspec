@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>campus-sec-sim</id>
+    <!-- Overridden at build time by choco pack (version option) from the release tag. -->
+    <version>0.0.0</version>
+    <title>Campus Security Simulator</title>
+    <authors>campus-security-platform</authors>
+    <projectUrl>https://github.com/loadedmind/campus-security-platform</projectUrl>
+    <licenseUrl>https://github.com/loadedmind/campus-security-platform/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <tags>campus security simulator vms access-control internal</tags>
+    <summary>Simulated VMS / access-control head end used as the platform workload.</summary>
+    <description>Runs campus-sec-sim.exe as the CampusSecSim Windows service (WinSW wrapper). Reads its config from %ProgramData%\CampusSecSim\config.yaml, which Ansible manages.</description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

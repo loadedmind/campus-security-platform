@@ -1,0 +1,16 @@
+---
+# Converge hosts to their site definition. Always run with --limit site_<name>.
+- name: Converge platform hosts
+  hosts: windows
+  gather_facts: false
+  serial: "{{ deploy_serial | default('100%') }}"
+  any_errors_fatal: true
+  roles:
+    - role: common
+    - role: wsus_server
+      when: role == 'wsus'
+    - role: chocolatey_client
+    - role: windows_exporter
+    - role: campus_sec_sim
+      when: role == 'secapp'
+    - role: release_marker

@@ -1,0 +1,39 @@
+name: Set up automation controller
+description: >-
+  Prepares the self-hosted runner as an Ansible/Terraform control node: Python
+  venv with pinned control-node deps, pinned Ansible collections, Terraform.
+inputs:
+  terraform:
+    description: Install Terraform as well.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Python venv with pinned dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        venv="${CAMPUS_STATE_DIR}/venv"
+        hash_file="${venv}/.requirements.sha256"
+        want="$(sha256sum ansible/requirements.txt | cut -d' ' -f1)"
+        if [[ ! -x "${venv}/bin/python" || "$(cat "${hash_file}" 2>/dev/null)" != "${want}" ]]; then
+          python3 -m venv --clear "${venv}"
+          "${venv}/bin/pip" install --quiet --upgrade pip
+          "${venv}/bin/pip" install --quiet -r ansible/requirements.txt
+          echo "${want}" > "${hash_file}"
+        fi
+        echo "${venv}/bin" >> "${GITHUB_PATH}"
+
+    - name: Ansible collections
+      shell: bash
+      working-directory: ansible
+      run: |
+        set -euo pipefail
+        "${CAMPUS_STATE_DIR}/venv/bin/ansible-galaxy" collection install -r requirements.yml -p .collections
+
+    - name: Terraform
+      if: inputs.terraform == 'true'
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        terraform_version: 1.17.1
+        terraform_wrapper: false

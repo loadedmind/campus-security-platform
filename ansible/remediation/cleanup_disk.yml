@@ -1,0 +1,38 @@
+---
+# Remediation: system volume below the free-space threshold. Run with --limit <host>.
+- name: Reclaim disk space
+  hosts: windows
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Measure free space before
+      ansible.windows.win_shell: "[math]::Round((Get-PSDrive C).Free / 1GB, 2)"
+      register: free_before
+      changed_when: false
+
+    - name: Remove temp files older than 7 days and rotated simulator logs older than 14 days
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Continue'
+        $cutoff = (Get-Date).AddDays(-7)
+        foreach ($dir in "$env:SystemRoot\Temp", "$env:TEMP") {
+            Get-ChildItem -Path $dir -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { -not $_.PSIsContainer -and $_.LastWriteTime -lt $cutoff } |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+        Get-ChildItem -Path 'C:\ProgramData\CampusSecSim\logs' -Filter '*.old*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-14) } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+      changed_when: true
+
+    - name: Clean superseded component store entries
+      ansible.windows.win_command: Dism.exe /Online /Cleanup-Image /StartComponentCleanup
+      changed_when: true
+
+    - name: Measure free space after
+      ansible.windows.win_shell: "[math]::Round((Get-PSDrive C).Free / 1GB, 2)"
+      register: free_after
+      changed_when: false
+
+    - name: Report reclaimed space
+      ansible.builtin.debug:
+        msg: "C: free {{ free_before.stdout | trim }} GB -> {{ free_after.stdout | trim }} GB"

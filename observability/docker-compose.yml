@@ -1,0 +1,76 @@
+# Monitoring + remediation relay for the campus security platform.
+# Runs on the automation host (same box as the self-hosted runner).
+#
+# Host ports are offset (19090/19093/13000) so this stack can coexist with an
+# existing Prometheus/Grafana on the same machine.
+#
+# Required files under ${CAMPUS_STATE_DIR} (created by the setup guide):
+#   secrets/webhook_token        shared bearer token Alertmanager -> remediator
+#   secrets/remediator.env       GITHUB_REPOSITORY, GITHUB_TOKEN, WEBHOOK_TOKEN
+#   secrets/grafana.env          GF_SECURITY_ADMIN_PASSWORD
+#   prometheus/targets/*.json    written by scripts/render_inventory.py
+#   prometheus/rules-generated/  written by scripts/render_firmware_rules.py
+name: campus-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    ports:
+      - "19090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ${CAMPUS_STATE_DIR:?set CAMPUS_STATE_DIR}/prometheus/targets:/etc/prometheus/targets:ro
+      - ${CAMPUS_STATE_DIR}/prometheus/rules-generated:/etc/prometheus/rules-generated:ro
+      - prometheus-data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "19093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${CAMPUS_STATE_DIR}/secrets/webhook_token:/etc/alertmanager/secrets/webhook_token:ro
+      - alertmanager-data:/alertmanager
+
+  remediator:
+    build: ../remediation/relay
+    image: campus-remediator:local
+    restart: unless-stopped
+    env_file:
+      - ${CAMPUS_STATE_DIR}/secrets/remediator.env
+    environment:
+      CATALOG_PATH: /etc/remediator/catalog.yaml
+      LISTEN_PORT: "8080"
+    volumes:
+      - ../remediation/catalog.yaml:/etc/remediator/catalog.yaml:ro
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    restart: unless-stopped
+    ports:
+      - "13000:3000"
+    env_file:
+      - ${CAMPUS_STATE_DIR}/secrets/grafana.env
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

@@ -1,0 +1,126 @@
+# Static alert rules. Firmware-drift rules are generated from fleet/firmware.yaml
+# (scripts/render_firmware_rules.py) into rules-generated/.
+#
+# Label contract:
+#   severity      critical | warning
+#   remediation   <catalog key>  -> alert is eligible for automatic remediation
+#                                   (remediation/catalog.yaml). No label = human only.
+groups:
+  - name: platform-hosts
+    rules:
+      - alert: HostDown
+        expr: up{job="windows"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.host }} ({{ $labels.site }}) is not answering scrapes"
+
+      - alert: CampusSecSimServiceDown
+        expr: windows_service_state{job="windows",service="CampusSecSim",state="running"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          remediation: restart_sim_service
+        annotations:
+          summary: "CampusSecSim service not running on {{ $labels.host }}"
+
+      - alert: CampusSecSimApiDown
+        # Service reports running but the API is dead: a restart loop would hide
+        # a real defect, so this one goes to a human.
+        expr: >-
+          up{job="campus_sim"} == 0
+          and on (host) windows_service_state{job="windows",service="CampusSecSim",state="running"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CampusSecSim API unreachable on {{ $labels.host }} while the service runs"
+
+      - alert: SystemDiskLow
+        expr: >-
+          windows_logical_disk_free_bytes{job="windows",volume="C:"}
+          / windows_logical_disk_size_bytes{job="windows",volume="C:"} < 0.10
+        for: 15m
+        labels:
+          severity: warning
+          remediation: cleanup_disk
+        annotations:
+          summary: "C: below 10% free on {{ $labels.host }}"
+
+      - alert: UpdatesOutstanding
+        expr: count by (site, host) (windows_update_pending_info{deployment_action="installation"}) > 0
+        for: 21d
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }} has had pending updates for 21 days; check the patch pipeline"
+
+  - name: campus-devices
+    rules:
+      - alert: DevicesOffline
+        # Aggregated per host so one remediation run handles all of them.
+        expr: >-
+          count by (site, host) (
+            campus_sim_device_up == 0
+            unless on (site, host, device_id) campus_sim_device_maintenance == 1
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+          remediation: reboot_offline_devices
+        annotations:
+          summary: "{{ $value }} device(s) offline on {{ $labels.host }}"
+
+      - alert: MassDeviceOutage
+        # Inhibits DevicesOffline (alertmanager.yml): power-cycling endpoints
+        # during an upstream failure only adds noise.
+        expr: >-
+          count by (site, host) (campus_sim_device_up == 0)
+          / count by (site, host) (campus_sim_device_up) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than half of the devices on {{ $labels.host }} are offline"
+
+      - alert: CameraNotRecording
+        # Evidence gap. Needs a human decision, never an automatic action.
+        expr: >-
+          campus_sim_camera_recording == 0
+          and on (site, host, device_id) campus_sim_device_up == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.device_id }} on {{ $labels.host }} is online but not recording"
+
+  - name: automation
+    rules:
+      - alert: RemediationSuppressed
+        expr: increase(remediator_suppressed_total{reason="rate_limited"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auto-remediation {{ $labels.remediation }} hit its hourly cap; a human must look"
+
+      - alert: RemediationDispatchFailing
+        expr: increase(remediator_dispatch_total{result="error"}[30m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Remediator cannot reach GitHub; automatic remediation is offline"
+
+      - alert: RemediatorDown
+        expr: up{job="remediator"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Remediation relay is down; automatic remediation is offline"
+
+  - name: platform-recording
+    rules:
+      # Toil accounting for the dashboard: automated actions per day.
+      - record: platform:remediation_dispatches:increase1d
+        expr: sum by (remediation) (increase(remediator_dispatch_total{result="ok"}[1d]))

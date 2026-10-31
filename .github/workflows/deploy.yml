@@ -1,0 +1,71 @@
+# Merge to main -> the sites the change touches converge to their definition.
+# Adding sites/<name>.yaml is the whole campus onboarding.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sites/**"
+      - "terraform/**"
+      - "ansible/**"
+      - "dsc/**"
+  workflow_dispatch:
+    inputs:
+      site:
+        description: Site to converge (e.g. hou-01, core)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan-scope:
+    name: validate + scope
+    runs-on: ubuntu-24.04
+    outputs:
+      core: ${{ steps.scope.outputs.core }}
+      campuses: ${{ steps.scope.outputs.campuses }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install PyYAML==6.0.3 jsonschema==4.26.0
+      - name: Validate site definitions
+        run: python scripts/validate_sites.py
+      - name: Decide which sites to deploy
+        id: scope
+        env:
+          BASE: ${{ github.event.before }}
+          SITE: ${{ inputs.site }}
+        run: python scripts/changed_sites.py --base "${BASE:-HEAD~1}" --site "${SITE}"
+
+  core:
+    needs: plan-scope
+    if: needs.plan-scope.outputs.core == 'true'
+    uses: ./.github/workflows/_deploy-site.yml
+    with:
+      site: core
+    secrets: inherit
+
+  campus:
+    needs: [plan-scope, core]
+    # Run when core succeeded or was not needed; never after a failed core.
+    if: >-
+      always() &&
+      needs.plan-scope.result == 'success' &&
+      needs.plan-scope.outputs.campuses != '[]' &&
+      (needs.core.result == 'success' || needs.core.result == 'skipped')
+    strategy:
+      fail-fast: false
+      max-parallel: 1   # one runner, one site at a time; also limits blast radius
+      matrix:
+        site: ${{ fromJSON(needs.plan-scope.outputs.campuses) }}
+    uses: ./.github/workflows/_deploy-site.yml
+    with:
+      site: ${{ matrix.site }}
+    secrets: inherit

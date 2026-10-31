@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - campus-lab     # Linux automation host (Terraform/Ansible control node)
+    - hyperv-host    # optional Windows runner on the Hyper-V host (image builds)

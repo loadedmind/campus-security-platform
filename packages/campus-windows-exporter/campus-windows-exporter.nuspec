@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>campus-windows-exporter</id>
+    <!-- Upstream windows_exporter version; set at build time by choco pack (version option). -->
+    <version>0.0.0</version>
+    <title>windows_exporter (internalized)</title>
+    <authors>prometheus-community (packaged by campus-security-platform)</authors>
+    <projectUrl>https://github.com/prometheus-community/windows_exporter</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <tags>prometheus windows_exporter monitoring internal</tags>
+    <summary>Internalized windows_exporter MSI, verified against the upstream SHA-256 at build time.</summary>
+    <description>Embeds the upstream MSI so hosts never download from the internet. Installs with CONFIG_FILE pointing at %ProgramData%\windows_exporter\config.yaml, which Ansible manages.</description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

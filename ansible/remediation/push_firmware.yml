@@ -1,0 +1,49 @@
+---
+# Remediation / rollout: converge devices of one type to fleet/firmware.yaml.
+# Run with --limit <host> -e device_type=<type>. Updates in batches so a bad
+# image never takes every door or camera on a campus down at once; stops at
+# the first batch that does not come back on the desired version.
+- name: Converge device firmware
+  hosts: role_secapp
+  gather_facts: false
+  serial: 1
+  vars:
+    batch_fraction: 0.25
+    api: "http://{{ ansible_host }}:{{ sim_port }}/api/v1"
+  tasks:
+    - name: Validate device_type and resolve the desired version
+      ansible.builtin.set_fact:
+        desired_version: "{{ (lookup('ansible.builtin.file', repo_root ~ '/fleet/firmware.yaml') | from_yaml).desired[device_type] }}"
+      when: device_type is defined and device_type is match('^[a-z]+$')
+
+    - name: Require a known device type
+      ansible.builtin.assert:
+        that: desired_version is defined
+        fail_msg: device_type '{{ device_type | default('') }}' is not in fleet/firmware.yaml
+
+    - name: Read devices
+      ansible.builtin.uri:
+        url: "{{ api }}/devices"
+        return_content: true
+      delegate_to: localhost
+      register: devices
+
+    - name: Plan batches of drifted, idle devices
+      ansible.builtin.set_fact:
+        drifted: >-
+          {{ devices.json.devices
+             | selectattr('device_type', 'equalto', device_type)
+             | rejectattr('firmware', 'equalto', desired_version)
+             | rejectattr('busy') | map(attribute='device_id') | list }}
+        type_total: "{{ devices.json.devices | selectattr('device_type', 'equalto', device_type) | list | length }}"
+
+    - name: Compute batch size (at least 1)
+      ansible.builtin.set_fact:
+        batch_size: "{{ [1, (type_total | int * batch_fraction) | int] | max }}"
+
+    - name: Roll out batch by batch
+      ansible.builtin.include_tasks: tasks/firmware_batch.yml
+      loop: "{{ drifted | batch(batch_size | int) | list }}"
+      loop_control:
+        loop_var: batch
+        label: "{{ batch | join(',') }}"

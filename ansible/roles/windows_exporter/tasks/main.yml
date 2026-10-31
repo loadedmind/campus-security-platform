@@ -1,0 +1,24 @@
+---
+- name: Create windows_exporter config directory
+  ansible.windows.win_file:
+    path: C:\ProgramData\windows_exporter
+    state: directory
+
+- name: Write windows_exporter config (must exist before package install)
+  ansible.windows.win_template:
+    src: config.yaml.j2
+    dest: C:\ProgramData\windows_exporter\config.yaml
+  notify: Restart windows_exporter
+
+- name: Install pinned windows_exporter from the release feed
+  chocolatey.chocolatey.win_chocolatey:
+    name: campus-windows-exporter
+    version: "{{ windows_exporter_version }}"
+    source: campus-release
+    state: downgrade   # converges to exactly this version, up or down
+
+- name: Ensure windows_exporter is running
+  ansible.windows.win_service:
+    name: windows_exporter
+    start_mode: auto
+    state: started

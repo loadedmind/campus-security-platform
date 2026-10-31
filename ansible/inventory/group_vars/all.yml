@@ -1,0 +1,9 @@
+---
+# Control-node services (the Linux automation host running the runner).
+prometheus_url: "{{ lookup('ansible.builtin.env', 'PROMETHEUS_URL') | default('http://127.0.0.1:19090', true) }}"
+sim_api_token: "{{ lookup('ansible.builtin.env', 'SIM_API_TOKEN') }}"
+sim_port: 8080
+
+# Repository root, resolved from the inventory location (ansible/inventory/),
+# so playbooks in any directory find repo files the same way.
+repo_root: "{{ (inventory_dir ~ '/../..') | realpath }}"

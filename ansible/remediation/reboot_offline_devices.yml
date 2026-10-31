@@ -1,0 +1,60 @@
+---
+# Remediation: field devices offline on one host. Run with --limit <host>.
+#
+# Guard rail: if more than max_offline_ratio of the host's devices are down, the
+# cause is upstream (switch, PoE budget, controller, head end) and power-cycling
+# endpoints only adds noise. Refuse and let the alert page a human.
+- name: Reboot offline devices through the head-end API
+  hosts: role_secapp
+  gather_facts: false
+  serial: 1
+  vars:
+    max_offline_ratio: 0.5
+    api: "http://{{ ansible_host }}:{{ sim_port }}/api/v1"
+  tasks:
+    - name: Read device inventory from the head end
+      ansible.builtin.uri:
+        url: "{{ api }}/devices"
+        return_content: true
+      delegate_to: localhost
+      register: devices
+
+    - name: Select offline devices that are not mid-maintenance
+      ansible.builtin.set_fact:
+        offline: "{{ devices.json.devices | rejectattr('online') | rejectattr('busy') | list }}"
+        total: "{{ devices.json.devices | length }}"
+
+    - name: Refuse when the outage looks site-wide
+      ansible.builtin.assert:
+        that: (offline | length) <= (total | int * max_offline_ratio)
+        fail_msg: >-
+          {{ offline | length }}/{{ total }} devices offline on {{ inventory_hostname }}:
+          likely network/power/head-end failure. Not auto-remediating.
+
+    - name: Power-cycle each offline device
+      ansible.builtin.uri:
+        url: "{{ api }}/devices/{{ item.device_id }}/reboot"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ sim_api_token }}"
+        body_format: json
+        body: {}
+        status_code: [202]
+      delegate_to: localhost
+      loop: "{{ offline }}"
+      loop_control:
+        label: "{{ item.device_id }}"
+
+    - name: Wait for the devices to come back
+      ansible.builtin.uri:
+        url: "{{ api }}/devices"
+        return_content: true
+      delegate_to: localhost
+      register: after
+      until: >-
+        after.json.devices
+        | selectattr('device_id', 'in', offline | map(attribute='device_id') | list)
+        | rejectattr('online') | list | length == 0
+      retries: 18
+      delay: 10
+      when: offline | length > 0

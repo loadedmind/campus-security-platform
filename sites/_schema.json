@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/loadedmind/campus-security-platform/sites/_schema.json",
+  "title": "Site definition",
+  "description": "One file per site. Adding a campus = adding a file that passes this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "kind", "display_name", "timezone", "image", "patch_ring", "hosts"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z]{3}-[0-9]{2}$|^core$",
+      "description": "Site slug. Must match the file name."
+    },
+    "kind": { "enum": ["core", "campus"] },
+    "display_name": { "type": "string", "minLength": 3, "maxLength": 64 },
+    "timezone": {
+      "type": "string",
+      "description": "Windows time zone ID, e.g. 'Central Standard Time'."
+    },
+    "image": {
+      "type": "string",
+      "pattern": "^ws2025-core-[0-9]{4}\\.[0-9]{2}$",
+      "description": "Golden image version. Changing it re-images every host in the site."
+    },
+    "patch_ring": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2,
+      "description": "0 = canary, 1 = early, 2 = broad."
+    },
+    "hosts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "role"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9]{3,8}-[a-z]{3,6}[0-9]{2}$", "maxLength": 15 },
+          "role": { "enum": ["secapp", "wsus"] },
+          "cpu": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 },
+          "memory_gb": { "type": "integer", "minimum": 2, "maximum": 16, "default": 2 }
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release"],
+      "properties": {
+        "release": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "Platform release (GitHub Release tag) deployed to this site. Revert the commit to roll back."
+        },
+        "devices": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "camera": { "type": "integer", "minimum": 0, "maximum": 2000 },
+            "door": { "type": "integer", "minimum": 0, "maximum": 2000 },
+            "reader": { "type": "integer", "minimum": 0, "maximum": 2000 },
+            "controller": { "type": "integer", "minimum": 0, "maximum": 500 }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "campus" } } },
+      "then": { "required": ["platform"] }
+    }
+  ]
+}

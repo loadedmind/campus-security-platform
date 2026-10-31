@@ -1,0 +1,99 @@
+# Patch one ring: approve -> checkpoint -> install (50% batches) -> health gate.
+# A failed gate restores the ring's pre-patch checkpoints and halts the run, so
+# later rings never receive an update set that hurt an earlier one.
+name: _patch-ring
+
+on:
+  workflow_call:
+    inputs:
+      ring:
+        required: true
+        type: number
+      environment:
+        required: true
+        type: string
+      approvals_run_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RING: ${{ inputs.ring }}
+  APPROVALS_RUN_ID: ${{ inputs.approvals_run_id }}
+  CAMPUS_STATE_DIR: ${{ vars.CAMPUS_STATE_DIR || '/var/lib/campus-platform' }}
+  HYPERV_HOST: ${{ vars.HYPERV_HOST }}
+  PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL || 'http://127.0.0.1:19090' }}
+
+jobs:
+  patch:
+    name: ring ${{ inputs.ring }}
+    runs-on: [self-hosted, linux, campus-lab]
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 360
+    env:
+      LAB_ADMIN_PASSWORD: ${{ secrets.LAB_ADMIN_PASSWORD }}
+      HYPERV_USER: ${{ secrets.HYPERV_USER }}
+      HYPERV_PASSWORD: ${{ secrets.HYPERV_PASSWORD }}
+      SIM_API_TOKEN: ${{ secrets.SIM_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-controller
+        with:
+          terraform: "false"
+
+      - name: Render inventory from current outputs
+        run: ./scripts/render_state.sh
+
+      - name: Resolve ring hosts
+        id: hosts
+        run: |
+          set -euo pipefail
+          [[ "$APPROVALS_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::approvals_run_id must be numeric"; exit 1; }
+          echo "regex=$(python3 scripts/group_hosts.py --inventory ansible/inventory/hosts.yml --group "ring_$RING")" >> "$GITHUB_OUTPUT"
+          mkdir -p "$CAMPUS_STATE_DIR/patch/$APPROVALS_RUN_ID"
+
+      - name: Pre-patch health (do not patch an already-broken ring)
+        env:
+          HOSTS: ${{ steps.hosts.outputs.regex }}
+        run: |
+          python3 scripts/prom_wait.py --prometheus "$PROMETHEUS_URL" \
+            --expr "ALERTS{alertstate=\"firing\",severity=\"critical\",host=~\"$HOSTS\"}" \
+            --expect empty --timeout 300 --interval 30
+
+      - name: Approve, checkpoint, install
+        id: install
+        working-directory: ansible
+        run: |
+          ansible-playbook playbooks/patch_ring.yml \
+            -e "ring=$RING" \
+            -e "patch_run_id=$APPROVALS_RUN_ID" \
+            -e "approvals_file=$CAMPUS_STATE_DIR/patch/$APPROVALS_RUN_ID/approved.json"
+
+      - name: Post-patch health gate (15 min clean)
+        id: gate
+        env:
+          HOSTS: ${{ steps.hosts.outputs.regex }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prom_wait.py --prometheus "$PROMETHEUS_URL" \
+            --expr "up{job=\"windows\",host=~\"$HOSTS\"}" --expect all-ones --timeout 1200 --stable 300
+          python3 scripts/prom_wait.py --prometheus "$PROMETHEUS_URL" \
+            --expr "ALERTS{alertstate=\"firing\",severity=\"critical\",host=~\"$HOSTS\"}" \
+            --expect empty --timeout 1800 --stable 900
+
+      - name: Restore pre-patch checkpoints
+        if: failure() && (steps.install.outcome == 'failure' || steps.gate.outcome == 'failure')
+        working-directory: ansible
+        run: |
+          echo "::error::ring $RING failed patching or its health gate; restoring checkpoints and halting"
+          ansible-playbook playbooks/patch_rollback.yml -e "ring=$RING" -e "patch_run_id=$APPROVALS_RUN_ID"
+          exit 1
+
+      - name: Summary
+        if: success()
+        run: |
+          count="$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" \
+            "$CAMPUS_STATE_DIR/patch/$APPROVALS_RUN_ID/approved.json" 2>/dev/null || echo '?')"
+          echo "### Ring $RING patched: $count update(s), gate passed" >> "$GITHUB_STEP_SUMMARY"
